@@ -151,21 +151,23 @@ async def ask_oracle(request: AskRequest):
 
     try:
         # 2. Gemini 호출
-        # [수정] 모델을 'gemini-1.5-pro'로 변경 (2.0-flash-exp 쿼터 초과 시 안정적인 대안)
+        # [수정] 404 오류 해결을 위해 연결이 확인된 'gemini-2.0-flash-exp' 모델로 변경
         response = client.models.generate_content(
-            model='gemini-1.5-pro',
+            model='gemini-2.0-flash-exp',
             contents=prompt
         )
         return JSONResponse(content={"answer": response.text})
         
     except Exception as e:
-        print(f"[API Error] Gemini call failed: {e}")
         error_msg = str(e)
+        print(f"[API Error] Gemini call failed: {error_msg}")
+        
         user_msg = f"⚠️ 죄송합니다. AI 연결 중 오류가 발생했습니다.\n(Error: {error_msg})"
         
-        # 쿼터 초과 에러(429)에 대한 친절한 안내 메시지 추가
+        # 429 Quota Exceeded (사용량 초과) 처리
+        # Experimental 모델은 사용량 제한이 있을 수 있으므로 사용자에게 안내합니다.
         if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            user_msg = "⚠️ 현재 사용자가 몰려 AI 응답 한도가 초과되었습니다(429). 잠시 후(약 1분 뒤) 다시 시도해주세요."
+            user_msg = "⚠️ 현재 사용자가 몰려 AI 응답 한도가 초과되었습니다(429). 잠시 후(약 1분 뒤) 다시 시도해주시면 정상적으로 답변을 받으실 수 있습니다."
             
         return JSONResponse(content={"answer": user_msg})
 

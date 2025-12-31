@@ -1,6 +1,11 @@
 # 1. 베이스 이미지: Python 3.9 Slim
 FROM python:3.9-slim
 
+# [추가] 파이썬 로그가 버퍼링 없이 즉시 출력되도록 설정 (Crashed 로그 확인용)
+ENV PYTHONUNBUFFERED=1
+# [추가] Node.js 메모리 제한 설정 (빌드 안정성)
+ENV NODE_OPTIONS="--max-old-space-size=4096"
+
 # 2. 필수 시스템 패키지 설치
 # - build-essential: kerykeion(pyswisseph) 라이브러리 컴파일을 위해 필요
 # - Node.js: React 프론트엔드 빌드를 위해 필요

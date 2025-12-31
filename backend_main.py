@@ -46,14 +46,13 @@ def calculate_chart(birth_date, birth_time, city):
         time_str = birth_time if len(birth_time.split(':')) == 3 else f"{birth_time}:00"
         
         # 1) 시간 객체 생성 (+09:00 한국 표준시 고정)
-        # 에러 포인트 1: 날짜/시간 형식이 안 맞으면 여기서 터짐
-        date = Datetime(f"{date_str} {time_str}", '+09:00')
+        # [수정] 날짜와 시간을 분리하여 전달해야 'invalid literal for int' 에러를 방지할 수 있습니다.
+        date = Datetime(date_str, time_str, '+09:00')
         
         # 2) 위치 객체 생성 (서울)
         pos = GeoPos(37.56, 126.97)
         
         # 3) 차트 계산
-        # 에러 포인트 2: 하우스 시스템 계산 중 에러 가능성
         chart = Chart(date, pos, IDs=const.LIST_OBJECTS)
 
         planets_data = []

@@ -151,8 +151,9 @@ async def ask_oracle(request: AskRequest):
 
     try:
         # 2. Gemini 호출
+        # [수정] 모델명을 구체적인 버전(gemini-1.5-flash-002)으로 변경하여 404 에러 방지
         response = client.models.generate_content(
-            model='gemini-1.5-flash',
+            model='gemini-1.5-flash-002',
             contents=prompt
         )
         return JSONResponse(content={"answer": response.text})

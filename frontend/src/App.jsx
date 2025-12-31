@@ -2,13 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, Sparkles, MapPin, Calendar, Clock, Loader2, Star, Moon, Sun, RotateCcw, ChevronRight } from 'lucide-react';
 
 // --- [Mock Data for Fallback] ---
-// 서버 에러 시에도 UI가 깨지지 않도록 안전장치용 데이터
 const FALLBACK_DATA = {
   profile: { name: "User", sun_sign: "Virgo", moon_sign: "Leo", ascendant: "Sagittarius" },
   planets: [
-    { name: "Sun", sign: "Virgo", house: "10 House" },
+    { name: "Sun", sign: "Virgo", "house": "10 House" },
     { name: "Moon", sign: "Leo", "house": "9 House" },
-    { name: "Ascendant", sign: "Sagittarius", house: "1 House" }
+    { name: "Ascendant", sign: "Sagittarius", "house": "1 House" }
   ],
   summary: "서버 응답 지연으로 예비 데이터를 표시합니다."
 };
@@ -29,7 +28,6 @@ const StarfieldCanvas = () => {
     const ctx = canvas.getContext('2d');
     let animationFrameId;
     let stars = [];
-    let mouse = { x: null, y: null };
 
     const resizeCanvas = () => {
       canvas.width = window.innerWidth;
@@ -92,7 +90,7 @@ const StarfieldCanvas = () => {
 
 // --- [UI Components] ---
 
-const ChatMessage = ({ message, isAi }) => (
+const ChatMessage = ({ message, isAi, isLoading }) => (
   <div className={`flex w-full mb-6 ${isAi ? 'justify-start' : 'justify-end'} animate-fade-in-up`}>
     <div className={`flex max-w-[85%] md:max-w-[75%] ${isAi ? 'flex-row' : 'flex-row-reverse'} items-end gap-3`}>
       {isAi && (
@@ -105,9 +103,17 @@ const ChatMessage = ({ message, isAi }) => (
           ? 'bg-slate-900/80 border border-amber-500/20 text-slate-200 rounded-2xl rounded-bl-none' 
           : 'bg-gradient-to-r from-amber-600 to-amber-700 text-white rounded-2xl rounded-br-none font-medium'
       }`}>
-        <div className={isAi ? "font-serif tracking-wide whitespace-pre-line" : "font-sans"}>
-            {message}
-        </div>
+        {isLoading ? (
+            <div className="flex gap-1 items-center h-6">
+                <div className="w-2 h-2 bg-amber-500/50 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                <div className="w-2 h-2 bg-amber-500/50 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                <div className="w-2 h-2 bg-amber-500/50 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+            </div>
+        ) : (
+            <div className={isAi ? "font-serif tracking-wide whitespace-pre-line" : "font-sans"}>
+                {message}
+            </div>
+        )}
       </div>
     </div>
   </div>
@@ -133,9 +139,10 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [chartData, setChartData] = useState(null);
+  const [isAiThinking, setIsAiThinking] = useState(false); // AI 로딩 상태
   const messagesEndRef = useRef(null);
 
-  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [messages]);
+  useEffect(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), [messages, isAiThinking]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -143,7 +150,6 @@ export default function App() {
     setLoadingState('calculating');
 
     try {
-        // [API CALL] 실제 백엔드 요청
         const response = await fetch('/api/chart', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -151,8 +157,6 @@ export default function App() {
         });
 
         const data = await response.json();
-        
-        // 데이터 유효성 체크 및 Fallback
         const validData = (data && data.planets) ? data : FALLBACK_DATA;
 
         setChartData(validData);
@@ -164,7 +168,6 @@ export default function App() {
 
     } catch (error) {
         console.error("API Error:", error);
-        // 에러 발생 시에도 Fallback 데이터로 진행하여 앱 중단 방지
         setChartData(FALLBACK_DATA);
         setStep('chat');
         setMessages([{ 
@@ -174,34 +177,45 @@ export default function App() {
     }
   };
 
-  const handleSendMessage = (e, textOverride = null) => {
+  const handleSendMessage = async (e, textOverride = null) => {
     if (e) e.preventDefault();
     const userMsg = textOverride || input;
     if (!userMsg.trim()) return;
     
     setInput('');
     setMessages(prev => [...prev, { text: userMsg, isAi: false }]);
+    setIsAiThinking(true); // AI 생각 중 표시
 
-    // AI 답변 시뮬레이션 (API 연결 가능)
-    setTimeout(() => {
-      let aiResponse = "별들의 움직임을 읽고 있습니다...";
-      const sun = chartData?.planets.find(p => p.name === "Sun")?.sign || "Unknown";
+    try {
+        // [수정됨] 실제 백엔드 AI 엔드포인트 호출
+        // 질문과 함께 현재 차트 정보도 보내야 정확한 해석이 가능합니다.
+        const response = await fetch('/api/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                question: userMsg,
+                planets: chartData.planets || FALLBACK_DATA.planets
+            })
+        });
 
-      if (userMsg.includes("연애") || userMsg.includes("사랑")) {
-        aiResponse = `당신의 태양 별자리인 ${sun}의 에너지를 보면, 올해는 감정적인 깊이를 추구하는 해입니다. 5월과 11월에 중요한 인연의 흐름이 보입니다.`;
-      } else if (userMsg.includes("직업") || userMsg.includes("일")) {
-        aiResponse = `직업운에서는 ${sun} 특유의 꼼꼼함이 빛을 발합니다. 현재 차트의 10하우스 상태를 볼 때, 변화보다는 안정을 택하는 것이 유리합니다.`;
-      } else {
-        aiResponse = `흥미로운 질문입니다. ${sun} 자리의 영향으로 당신은 이 문제에 대해 신중하게 접근하고 계시군요. 구체적인 상황을 알려주시면 더 자세히 봐드릴게요.`;
-      }
-      setMessages(prev => [...prev, { text: aiResponse, isAi: true }]);
-    }, 1200);
+        const data = await response.json();
+        
+        setIsAiThinking(false);
+        setMessages(prev => [...prev, { text: data.answer, isAi: true }]);
+
+    } catch (error) {
+        console.error("AI Request Error:", error);
+        setIsAiThinking(false);
+        setMessages(prev => [...prev, { 
+            text: "죄송합니다. 별들의 목소리가 잠시 끊겼습니다. 다시 한 번 질문해 주시겠어요?", 
+            isAi: true 
+        }]);
+    }
   };
 
   return (
     <div className="min-h-screen bg-[#0B0F19] text-slate-200 font-sans selection:bg-amber-500/30 selection:text-amber-100 overflow-x-hidden">
       
-      {/* 폰트 로드 */}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;800&family=Lato:wght@300;400;700&display=swap');
         .font-serif { font-family: 'Cinzel', serif; }
@@ -214,7 +228,6 @@ export default function App() {
         .animate-fade-in-up { animation: fade-in-up 0.4s ease-out forwards; }
       `}</style>
 
-      {/* 배경 그라데이션 */}
       <div className="fixed inset-0 pointer-events-none z-0">
          <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-[#1a1f35] to-transparent opacity-60"></div>
       </div>
@@ -325,6 +338,10 @@ export default function App() {
                     )}
                 </div>
               ))}
+              
+              {/* AI 로딩 인디케이터 */}
+              {isAiThinking && <ChatMessage message="" isAi={true} isLoading={true} />}
+              
               <div ref={messagesEndRef} className="h-4" />
             </div>
 
@@ -332,7 +349,7 @@ export default function App() {
               <form onSubmit={handleSendMessage} className="relative group">
                 <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="운세에 대해 물어보세요..."
                   className="w-full bg-[#121726] border border-slate-700 text-slate-200 rounded-2xl py-4 pl-5 pr-14 outline-none focus:border-amber-500/50 placeholder:text-slate-600 font-sans shadow-xl relative z-10" />
-                <button type="submit" disabled={!input.trim()} className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl disabled:opacity-50 transition-all z-20">
+                <button type="submit" disabled={!input.trim() || isAiThinking} className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl disabled:opacity-50 transition-all z-20">
                   <Send size={18} />
                 </button>
               </form>
@@ -343,5 +360,3 @@ export default function App() {
     </div>
   );
 }
-
-

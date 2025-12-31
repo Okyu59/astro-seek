@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import os
 import sys
 from datetime import datetime, timedelta
-import google.generativeai as genai # [추가] Gemini API 라이브러리
+from google import genai # [변경] 최신 Gemini API 라이브러리
 
 # [라이브러리 로드]
 try:
@@ -25,22 +25,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# [설정] Gemini API 키 설정
-# Railway 배포 시 Variables 탭에서 GEMINI_API_KEY를 추가해야 합니다.
+# [설정] Gemini API 클라이언트 설정 (google-genai 최신 버전)
+# Railway Variables에 GEMINI_API_KEY가 등록되어 있어야 합니다.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = None
 
 if GEMINI_API_KEY:
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        # 빠르고 효율적인 Flash 모델 사용 권장
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        print("[System] Gemini API Configured successfully.")
+        # 최신 SDK 초기화 방식
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        print("[System] Gemini API Client Configured successfully.")
     except Exception as e:
-        print(f"[System] Gemini Configuration Error: {e}")
-        model = None
+        print(f"[System] Gemini Client Error: {e}")
 else:
     print("[System] Warning: GEMINI_API_KEY not found in environment variables.")
-    model = None
 
 # --- [데이터 모델] ---
 class ChartRequest(BaseModel):
@@ -55,7 +53,7 @@ class PlanetData(BaseModel):
 
 class AskRequest(BaseModel):
     question: str
-    planets: list[PlanetData] # 질문 시 차트 정보를 함께 받음
+    planets: list[PlanetData]
 
 def get_zodiac_sign(longitude):
     """황경(0~360도)을 별자리 이름으로 변환"""
@@ -74,20 +72,16 @@ def calculate_chart(birth_date, birth_time, city):
         }
 
     try:
-        # 날짜/시간 파싱
         year, month, day = map(int, birth_date.split('-'))
         hour, minute = map(int, birth_time.split(':'))
         
-        # UTC 변환 (KST -> UTC)
         dt_kst = datetime(year, month, day, hour, minute)
         dt_utc = dt_kst - timedelta(hours=9)
         hour_decimal = dt_utc.hour + (dt_utc.minute / 60.0) + (dt_utc.second / 3600.0)
         
-        # Swiss Ephemeris 계산
         jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, hour_decimal)
-        lat, lon = 37.56, 126.97 # 서울 좌표 고정 (실제 앱에선 city기반 매핑 필요)
+        lat, lon = 37.56, 126.97
         
-        # 하우스 및 상승궁
         cusps, ascmc = swe.houses(jd, lat, lon, b'P')
         asc_sign = get_zodiac_sign(ascmc[0])
         
@@ -134,16 +128,13 @@ async def ask_oracle(request: AskRequest):
     """
     [Gemini 연동] 사용자의 질문과 차트 정보를 바탕으로 AI 점성술사가 답변을 생성합니다.
     """
-    # 1. API 키 확인
-    if not model:
+    if not client:
         return JSONResponse(content={
             "answer": "⚠️ 죄송합니다. 현재 서버에 AI 설정(API Key)이 되어있지 않아 상세한 상담이 어렵습니다. 관리자에게 문의해주세요."
         })
 
-    # 2. 프롬프트 구성
     q = request.question
     
-    # 차트 데이터를 텍스트로 변환
     chart_context = "User's Birth Chart Data:\n"
     for p in request.planets:
         chart_context += f"- {p.name}: {p.sign} in {p.house}\n"
@@ -161,15 +152,16 @@ async def ask_oracle(request: AskRequest):
     [답변 가이드라인]
     1. 말투: 신비롭고 따뜻하며, 전문적인 점성술사의 어조를 유지하세요. (존댓말 사용)
     2. 내용: 질문과 관련된 특정 행성이나 하우스의 위치를 근거로 들어 구체적으로 해석해주세요.
-       - 예: 연애운 질문이면 금성(Venus)과 5하우스/7하우스를 언급.
-       - 예: 직업운 질문이면 태양(Sun), 수성(Mercury), 10하우스를 언급.
-    3. 형식: 너무 길지 않게, 3~4문단의 읽기 편한 길이로 작성해주세요. 중요한 키워드는 강조해도 좋습니다.
+    3. 형식: 너무 길지 않게, 3~4문단의 읽기 편한 길이로 작성해주세요.
     4. 공감: 사용자의 고민에 공감하고 긍정적인 방향을 제시해주세요.
     """
 
     try:
-        # 3. Gemini에게 답변 요청
-        response = model.generate_content(prompt)
+        # 최신 라이브러리 문법 사용
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt
+        )
         return JSONResponse(content={"answer": response.text})
         
     except Exception as e:

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 import os
@@ -17,6 +17,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- [Path Debugging] ---
+# 서버 시작 시 현재 위치와 파일들을 확인합니다. (Railway 로그에서 확인 가능)
+print("------------------------------------------------")
+CURRENT_DIR = os.getcwd()
+DIST_DIR = os.path.join(CURRENT_DIR, "frontend/dist")
+print(f"[Startup] Current Directory: {CURRENT_DIR}")
+print(f"[Startup] Expected Dist Directory: {DIST_DIR}")
+
+if os.path.exists(DIST_DIR):
+    print(f"[Startup] Dist directory found! Contents: {os.listdir(DIST_DIR)}")
+else:
+    print("[Startup] CRITICAL ERROR: Dist directory NOT found.")
+    # frontend 폴더라도 있는지 확인
+    if os.path.exists("frontend"):
+        print(f"[Startup] Frontend folder contents: {os.listdir('frontend')}")
+print("------------------------------------------------")
+
+
 class ChartRequest(BaseModel):
     date: str
     time: str
@@ -24,7 +42,6 @@ class ChartRequest(BaseModel):
 
 # --- [Fallback Data Generator] ---
 def get_fallback_data(date, reason="Unknown Error"):
-    """크롤링 실패 시 보여줄 기본 데이터"""
     return {
         "summary": f"(시스템 알림: {reason}) 서버 부하로 인해 예비 데이터를 표시합니다. {date}의 차트입니다.",
         "planets": [
@@ -41,55 +58,39 @@ def get_fallback_data(date, reason="Unknown Error"):
 # --- [Scraping Logic] ---
 def scrape_astro_seek(birth_date, birth_time, city):
     print(f"[Log] Scraping started for {birth_date} {birth_time}")
-    
     try:
         year, month, day = birth_date.split('-')
         hour, minute = birth_time.split(':')
     except Exception as e:
-        print(f"[Error] Date parsing failed: {e}")
         return get_fallback_data(birth_date, "Date format error")
 
     data = {"planets": [], "summary": ""}
     
-    # 브라우저 실행 옵션 최적화 (메모리 부족 방지)
-    launch_args = [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', # 메모리 공유 비활성화 (Docker 필수)
-        '--disable-gpu',
-        '--single-process' # 프로세스 하나만 사용 (메모리 절약)
-    ]
+    # 메모리 최적화 옵션
+    launch_args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--single-process']
 
     playwright = None
     browser = None
     
     try:
         playwright = sync_playwright().start()
-        # Headless 모드로 브라우저 실행
         browser = playwright.chromium.launch(headless=True, args=launch_args)
         page = browser.new_page()
         
-        # 페이지 이동 (타임아웃 30초로 단축하여 빠른 실패 유도)
-        print("[Log] Navigating to Astro-Seek...")
+        # 페이지 이동 (30초 타임아웃)
         page.goto("https://www.astro-seek.com/birth-chart-horoscope-online", timeout=30000)
         
         # 폼 입력
-        print("[Log] Filling form...")
         page.select_option('select[name="narozeni_den"]', str(int(day)))
         page.select_option('select[name="narozeni_mesic"]', str(int(month)))
         page.select_option('select[name="narozeni_rok"]', year)
         page.fill('input[name="narozeni_hodina"]', hour)
         page.fill('input[name="narozeni_minuta"]', minute)
         
-        # 계산 클릭
-        print("[Log] Submitting...")
         page.click('input[type="submit"]')
-        
-        # 결과 대기
         page.wait_for_selector('.horoscope_table', timeout=20000)
         
         # 데이터 추출
-        print("[Log] Extracting data...")
         rows = page.query_selector_all(".horoscope_table tr")
         for row in rows:
             text = row.inner_text()
@@ -103,13 +104,10 @@ def scrape_astro_seek(birth_date, birth_time, city):
                 data["planets"].append({"name": "Venus", "sign": text.split()[1], "house": "12 House"})
             elif "Mars" in text:
                 data["planets"].append({"name": "Mars", "sign": text.split()[1], "house": "5 House"})
-            elif "Jupiter" in text:
-                data["planets"].append({"name": "Jupiter", "sign": text.split()[1], "house": "1 House"})
 
         data["summary"] = f"{year}년 {month}월 {day}일에 태어난 당신의 차트 분석 결과입니다."
         
         if not data["planets"]:
-            print("[Warning] No planets found in table.")
             return get_fallback_data(birth_date, "Data extraction empty")
             
         return data
@@ -117,11 +115,9 @@ def scrape_astro_seek(birth_date, birth_time, city):
     except Exception as e:
         print(f"[Error] Scraping crashed: {str(e)}")
         traceback.print_exc()
-        # 크롤링 실패 시에도 서버 에러(500) 대신 Fallback 데이터 반환하여 앱 작동 보장
         return get_fallback_data(birth_date, "Live data unavailable (Traffic/Memory)")
 
     finally:
-        # 자원 정리
         if browser: browser.close()
         if playwright: playwright.stop()
 
@@ -133,19 +129,43 @@ async def health_check():
 
 @app.post("/api/chart")
 async def get_chart(request: ChartRequest):
-    print(f"[API] Request received: {request}")
-    # 어떤 에러가 나도 JSON을 반환하도록 함
     try:
         result = scrape_astro_seek(request.date, request.time, request.city)
         return JSONResponse(content=result)
     except Exception as e:
-        print(f"[API Critical Error] {str(e)}")
         return JSONResponse(content=get_fallback_data(request.date, "Server Logic Error"))
 
-# --- [Serve React App] ---
-if os.path.exists("frontend/dist"):
-    app.mount("/", StaticFiles(directory="frontend/dist", html=True), name="static")
-else:
-    print("[Warning] 'frontend/dist' folder not found. React app will not be served.")
+# --- [Serve React App Explicitly] ---
+
+# 1. Assets (JS, CSS) 마운트
+if os.path.exists(os.path.join(DIST_DIR, "assets")):
+    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
+
+# 2. 루트 경로 접속 시 index.html 강제 반환 (SPA 처리)
+@app.get("/")
+async def serve_spa_root():
+    index_path = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    else:
+        # 파일이 없으면 에러 내용을 브라우저에 표시
+        return JSONResponse(
+            status_code=404, 
+            content={
+                "error": "Frontend build not found", 
+                "current_dir": CURRENT_DIR,
+                "dist_dir": DIST_DIR,
+                "exists": os.path.exists(DIST_DIR),
+                "contents": os.listdir(CURRENT_DIR) if os.path.exists(CURRENT_DIR) else "Cannot read dir"
+            }
+        )
+
+# 3. 그 외 모든 경로는 index.html로 리다이렉트 (React Router 지원)
+@app.exception_handler(404)
+async def custom_404_handler(_, __):
+    index_path = os.path.join(DIST_DIR, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(status_code=404, content={"error": "Page not found and build missing"})
 
 

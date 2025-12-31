@@ -1,11 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 import os
-import traceback
 
 app = FastAPI()
 
@@ -17,28 +16,28 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- [로깅 미들웨어] ---
+# 요청이 들어올 때마다 로그를 남겨서 Railway Logs에서 확인할 수 있게 함
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"[Request] {request.method} {request.url.path}")
+    response = await call_next(request)
+    print(f"[Response] {response.status_code}")
+    return response
+
+# 데이터 모델
 class ChartRequest(BaseModel):
     date: str
     time: str
     city: str
 
-# --- [1. API Endpoints] ---
-# API는 반드시 StaticFiles보다 위에 정의해야 합니다.
-
-@app.get("/api/health")
-async def health_check():
-    return {"status": "ok"}
-
+# --- [API Endpoints] ---
 @app.post("/api/chart")
 async def get_chart(request: ChartRequest):
-    print(f"[API Request] {request}")
-    # 크롤링 로직 (축약됨 - 이전과 동일하게 유지하거나 아래 Fallback 사용)
-    # 실제 구현 시에는 안전을 위해 Fallback 로직을 포함하세요.
-    return get_fallback_data(request.date, "Traffic Optimization")
-
-def get_fallback_data(date, reason):
+    print(f"[API] Chart Request: {request}")
+    # (안전장치) 크롤링 로직 대신 일단 Fallback 데이터를 반환하여 앱 작동 확인
     return {
-        "summary": f"(시스템: {reason}) 서버 최적화를 위해 예비 데이터를 보여드립니다. {date}",
+        "summary": "서버 연결 성공! (실제 크롤링은 로직 복원 필요)",
         "planets": [
             {"name": "Sun", "sign": "Virgo", "house": "10 House"},
             {"name": "Moon", "sign": "Leo", "house": "9 House"},
@@ -49,32 +48,37 @@ def get_fallback_data(date, reason):
         ]
     }
 
-# --- [2. Frontend Serving Logic] ---
-# 프론트엔드 빌드 폴더 경로 확인
-DIST_DIR = os.path.join(os.getcwd(), "frontend/dist")
+# --- [Frontend Serving Logic (SPA Optimized)] ---
+CURRENT_DIR = os.getcwd()
+DIST_DIR = os.path.join(CURRENT_DIR, "frontend/dist")
+ASSETS_DIR = os.path.join(DIST_DIR, "assets")
 
-if os.path.exists(DIST_DIR):
-    # 1) 루트 URL 접속 시 index.html 반환 (SPA 지원)
-    @app.get("/")
-    async def serve_spa():
-        return FileResponse(os.path.join(DIST_DIR, "index.html"))
-
-    # 2) 그 외 모든 정적 파일(JS, CSS, 이미지) 서빙
-    app.mount("/", StaticFiles(directory=DIST_DIR, html=True), name="static")
-    
-    print(f"[Server] Serving frontend from {DIST_DIR}")
+# 1. Assets 폴더가 있다면 우선적으로 마운트 (JS, CSS 파일용)
+if os.path.exists(ASSETS_DIR):
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+    print(f"[Startup] Assets mounted from {ASSETS_DIR}")
 else:
-    # 빌드 폴더가 없으면 에러 메시지 출력 (검은 화면 대신 이 메시지가 나와야 함)
-    print(f"[Error] 'frontend/dist' folder not found in {os.getcwd()}")
-    @app.get("/")
-    async def index_error():
-        return JSONResponse(
-            status_code=404, 
-            content={
-                "error": "Frontend build failed or not found.", 
-                "files_in_root": os.listdir(os.getcwd()) if os.path.exists(os.getcwd()) else "None",
-                "files_in_frontend": os.listdir("frontend") if os.path.exists("frontend") else "No frontend folder"
-            }
-        )
+    print(f"[Startup] Warning: Assets folder not found at {ASSETS_DIR}")
+
+# 2. 루트 및 기타 모든 경로에 대해 index.html 반환 (Catch-All)
+@app.get("/{full_path:path}")
+async def serve_spa(full_path: str):
+    index_path = os.path.join(DIST_DIR, "index.html")
+    
+    # API 요청은 위에서 처리되므로 여기까지 오지 않음
+    # 파일이 존재하면 index.html 반환
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    
+    # 빌드 실패 시 에러 JSON 반환
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "Frontend build not found.",
+            "message": "Please check 'npm run build' logs.",
+            "current_dir": CURRENT_DIR,
+            "dist_exists": os.path.exists(DIST_DIR)
+        }
+    )
 
 

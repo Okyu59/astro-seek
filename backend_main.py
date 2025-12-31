@@ -158,12 +158,12 @@ async def ask_oracle(request: AskRequest):
     4. 제한: 차트 데이터에 없는 내용은 지어내지 마세요.
     """
 
-    # 시도할 모델 목록 (안정적인 순서)
+    # 시도할 모델 목록 (최신 모델 우선 적용)
     MODELS_TO_TRY = [
-        "gemini-1.5-flash",       # 1순위
-        "gemini-1.5-flash-001",   # 2순위
-        "gemini-2.0-flash-exp",   # 3순위
-        "gemini-1.5-pro"          # 4순위
+        "gemini-2.5-flash",       # 1순위: 최신 플래시 모델
+        "gemini-2.0-flash",       # 2순위: 2.0 버전
+        "gemini-1.5-flash",       # 3순위: 안정적인 구버전
+        "gemini-1.5-pro"          # 4순위: 고성능 프로 모델
     ]
 
     last_error = None

@@ -3,10 +3,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from playwright.sync_api import sync_playwright
+from playwright.async_api import async_playwright # [변경] Async API 사용
 import os
 import traceback
 import urllib.parse
+import asyncio
 
 app = FastAPI()
 
@@ -25,11 +26,8 @@ class ChartRequest(BaseModel):
 
 # --- [Fallback Data] ---
 def get_fallback_data(date, error_msg):
-    """
-    실패 시 사용자에게 에러 원인을 보여주는 예비 데이터
-    """
     return {
-        "summary": f"⚠️ 데이터 조회 실패\n원인: {error_msg}\n\n(서버 메모리 부족이나 차단 문제일 수 있습니다. 아래는 예시 데이터입니다.)",
+        "summary": f"⚠️ 데이터 조회 실패\n원인: {error_msg}\n\n(예비 데이터를 표시합니다.)",
         "planets": [
             {"name": "Sun", "sign": "Virgo", "house": "10 House"},
             {"name": "Moon", "sign": "Leo", "house": "9 House"},
@@ -40,9 +38,9 @@ def get_fallback_data(date, error_msg):
         ]
     }
 
-# --- [Optimized Scraping Logic: URL Direct Access] ---
-def scrape_astro_seek(birth_date, birth_time, city):
-    print(f"[Scraper] Starting job for {birth_date} {birth_time}")
+# --- [Async Scraping Logic] ---
+async def scrape_astro_seek(birth_date, birth_time, city):
+    print(f"[Scraper] Async job started for {birth_date} {birth_time}")
     
     try:
         year, month, day = birth_date.split('-')
@@ -52,8 +50,7 @@ def scrape_astro_seek(birth_date, birth_time, city):
 
     data = {"planets": [], "summary": ""}
     
-    # 1. URL 직접 구성 (폼 입력 생략 -> 메모리/시간 절약)
-    # Astro-Seek 계산기 URL 패턴
+    # URL 직접 구성
     base_url = "https://horoscopes.astro-seek.com/calculate-birth-chart-horoscope-online/"
     params = {
         "narozeni_den": int(day),
@@ -61,106 +58,101 @@ def scrape_astro_seek(birth_date, birth_time, city):
         "narozeni_rok": year,
         "narozeni_hodina": hour,
         "narozeni_minuta": minute,
-        "narozeni_city": "Seoul, South Korea", # 도시 고정 (복잡성 회피)
+        "narozeni_city": "Seoul, South Korea",
         "narozeni_mesto_hidden": "Seoul",
         "narozeni_stat_hidden": "KR",
         "narozeni_podstat_kratky_hidden": "",
         "narozeni_podstat_hidden": "Seoul"
     }
     
-    # URL 인코딩
-    query_string = urllib.parse.urlencode(params)
-    target_url = f"{base_url}?{query_string}"
-    print(f"[Scraper] Target URL: {target_url}")
+    target_url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    print(f"[Scraper] Target: {target_url}")
 
-    # 2. 브라우저 옵션 (메모리 극단적 최적화)
+    # 브라우저 옵션
     launch_args = [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage', # Docker 필수
+        '--disable-dev-shm-usage',
         '--disable-gpu',
-        '--single-process', # 프로세스 단일화
+        '--single-process',
         '--disable-extensions',
-        '--disable-images' # 이미지 로딩 차단 (속도 향상)
+        '--disable-images' 
     ]
     
-    playwright = None
-    browser = None
-    
-    try:
-        playwright = sync_playwright().start()
-        
-        # 브라우저 실행
-        browser = playwright.chromium.launch(headless=True, args=launch_args)
-        
-        # User-Agent 설정 (일반 사용자처럼 위장)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            viewport={"width": 800, "height": 600}
-        )
-        page = context.new_page()
-        
-        # 3. 페이지 이동 (URL로 바로 접속)
-        print("[Scraper] Navigating directly to result page...")
-        # 네트워크가 유휴 상태일 때까지 대기하지 않고, DOM만 로드되면 진행 (속도 향상)
-        page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
-        
-        # 4. 결과 테이블 대기
-        print("[Scraper] Waiting for table...")
+    # [변경] Async Context Manager 사용
+    async with async_playwright() as p:
+        browser = None
         try:
-            page.wait_for_selector('.horoscope_table', timeout=15000)
-        except:
-            # 혹시 선택자가 안 뜨면 페이지 소스 덤프 (디버깅용 - 로그 확인)
-            print("[Error] Table not found. Title:", page.title())
-            raise Exception("Result table not found (Timeout)")
+            # [변경] await 사용
+            browser = await p.chromium.launch(headless=True, args=launch_args)
+            
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                viewport={"width": 800, "height": 600}
+            )
+            page = await context.new_page()
+            
+            print("[Scraper] Navigating...")
+            # [변경] await 사용
+            await page.goto(target_url, timeout=60000, wait_until="domcontentloaded")
+            
+            print("[Scraper] Waiting for table...")
+            try:
+                await page.wait_for_selector('.horoscope_table', timeout=20000)
+            except:
+                title = await page.title()
+                print(f"[Error] Table not found. Page title: {title}")
+                raise Exception("Result table not found (Timeout)")
+            
+            print("[Scraper] Extracting data...")
+            rows = await page.query_selector_all(".horoscope_table tr")
+            
+            for row in rows:
+                # [변경] inner_text()도 await 필요
+                text = await row.inner_text()
+                
+                if "Sun" in text and "Sign" not in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Sun", "sign": parts[1], "house": "10 House"})
+                elif "Moon" in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Moon", "sign": parts[1], "house": "4 House"})
+                elif "Mercury" in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Mercury", "sign": parts[1], "house": "11 House"})
+                elif "Venus" in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Venus", "sign": parts[1], "house": "12 House"})
+                elif "Mars" in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Mars", "sign": parts[1], "house": "5 House"})
+                elif "Jupiter" in text:
+                    parts = text.split()
+                    if len(parts) > 1: data["planets"].append({"name": "Jupiter", "sign": parts[1], "house": "1 House"})
+
+            if data["planets"]:
+                sun_sign = next((p['sign'] for p in data['planets'] if p['name'] == 'Sun'), 'Unknown')
+                data["summary"] = f"Astro-Seek 데이터 수신 성공!\n당신의 태양 별자리는 {sun_sign}입니다."
+                print(f"[Scraper] Success! Found {len(data['planets'])} planets.")
+                return data
+            else:
+                raise Exception("No planet data found in table")
+
+        except Exception as e:
+            print(f"[Scraper] Error: {str(e)}")
+            traceback.print_exc()
+            return get_fallback_data(birth_date, str(e))
         
-        # 5. 데이터 추출
-        print("[Scraper] Extracting data...")
-        rows = page.query_selector_all(".horoscope_table tr")
-        
-        for row in rows:
-            text = row.inner_text()
-            if "Sun" in text and "Sign" not in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Sun", "sign": parts[1], "house": "10 House"})
-            elif "Moon" in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Moon", "sign": parts[1], "house": "4 House"})
-            elif "Mercury" in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Mercury", "sign": parts[1], "house": "11 House"})
-            elif "Venus" in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Venus", "sign": parts[1], "house": "12 House"})
-            elif "Mars" in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Mars", "sign": parts[1], "house": "5 House"})
-            elif "Jupiter" in text:
-                parts = text.split()
-                if len(parts) > 1: data["planets"].append({"name": "Jupiter", "sign": parts[1], "house": "1 House"})
-
-        if data["planets"]:
-            sun_sign = next((p['sign'] for p in data['planets'] if p['name'] == 'Sun'), 'Unknown')
-            data["summary"] = f"Astro-Seek 데이터 수신 성공!\n당신의 태양 별자리는 {sun_sign}입니다."
-            print(f"[Scraper] Success! Found {len(data['planets'])} planets.")
-            return data
-        else:
-            raise Exception("No planet data found in table")
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[Scraper] Error: {error_msg}")
-        return get_fallback_data(birth_date, error_msg) # 에러 메시지를 UI에 전달
-
-    finally:
-        if browser: browser.close()
-        if playwright: playwright.stop()
+        finally:
+            if browser:
+                await browser.close()
 
 # --- [API Endpoints] ---
 
 @app.post("/api/chart")
 async def get_chart(request: ChartRequest):
-    result = scrape_astro_seek(request.date, request.time, request.city)
+    # [변경] await 사용하여 비동기 함수 호출
+    result = await scrape_astro_seek(request.date, request.time, request.city)
     return JSONResponse(content=result)
 
 # --- [Frontend Serving] ---

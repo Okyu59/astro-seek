@@ -31,14 +31,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = None
 
 if GEMINI_API_KEY:
+    # [수정] API 키 값의 앞뒤 공백 제거 (복사/붙여넣기 실수 방지)
+    GEMINI_API_KEY = GEMINI_API_KEY.strip()
     try:
         # 최신 SDK 초기화 방식
         client = genai.Client(api_key=GEMINI_API_KEY)
-        print("[System] Gemini API Client Configured successfully.")
+        print(f"[System] Gemini API Client Configured successfully. (Key Length: {len(GEMINI_API_KEY)})")
     except Exception as e:
         print(f"[System] Gemini Client Error: {e}")
 else:
-    print("[System] Warning: GEMINI_API_KEY not found in environment variables.")
+    print("[System] Warning: GEMINI_API_KEY not found in environment variables. Please check Railway Variables.")
 
 # --- [데이터 모델] ---
 class ChartRequest(BaseModel):
@@ -129,6 +131,7 @@ async def ask_oracle(request: AskRequest):
     [Gemini 연동] 사용자의 질문과 차트 정보를 바탕으로 AI 점성술사가 답변을 생성합니다.
     """
     if not client:
+        print("[API Error] Client is not initialized. GEMINI_API_KEY is missing or invalid.")
         return JSONResponse(content={
             "answer": "⚠️ 죄송합니다. 현재 서버에 AI 설정(API Key)이 되어있지 않아 상세한 상담이 어렵습니다. 관리자에게 문의해주세요."
         })

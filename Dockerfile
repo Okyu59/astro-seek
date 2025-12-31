@@ -1,14 +1,13 @@
-# 1. 베이스 이미지: Python 3.9 Slim
-FROM python:3.9-slim
+# 1. 베이스 이미지: Python 3.11 Slim (최신 안정 버전 사용)
+# Python 3.9 관련 호환성 경고 해결
+FROM python:3.11-slim
 
-# [추가] 파이썬 로그가 버퍼링 없이 즉시 출력되도록 설정 (Crashed 로그 확인용)
+# 로그 버퍼링 비활성화 (로그 즉시 출력)
 ENV PYTHONUNBUFFERED=1
-# [추가] Node.js 메모리 제한 설정 (빌드 안정성)
+# Node.js 메모리 설정
 ENV NODE_OPTIONS="--max-old-space-size=4096"
 
 # 2. 필수 시스템 패키지 설치
-# - build-essential: kerykeion(pyswisseph) 라이브러리 컴파일을 위해 필요
-# - Node.js: React 프론트엔드 빌드를 위해 필요
 RUN apt-get update && apt-get install -y \
     curl \
     gnupg \
@@ -25,8 +24,6 @@ WORKDIR /app
 # 4. 파이썬 의존성 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# (중요) Playwright 설치 및 브라우저 다운로드 단계가 삭제되었습니다.
 
 # --- [Frontend Setup] ---
 # 5. React 소스 코드 복사 및 빌드

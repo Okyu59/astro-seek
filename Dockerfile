@@ -24,12 +24,12 @@ RUN playwright install-deps chromium
 
 # --- [Frontend Setup] ---
 # 6. React 소스 코드 복사 및 빌드
-# 폴더 구조: /app/frontend 에 React 코드가 있다고 가정
+# 중요: package-lock.json 복사 라인을 제거했습니다.
 COPY frontend/package.json ./frontend/
-COPY frontend/package-lock.json ./frontend/
 WORKDIR /app/frontend
 RUN npm install
 
+# 소스 전체 복사 후 빌드
 COPY frontend/ ./
 RUN npm run build
 
@@ -38,10 +38,10 @@ RUN npm run build
 WORKDIR /app
 COPY backend_main.py .
 
-# 8. 포트 노출 (FastAPI 기본 포트 8000 -> Railway 등에서 자동 매핑)
+# 8. 포트 노출
 EXPOSE 8000
 
-# 9. 실행 명령어 (FastAPI 서버 실행)
+# 9. 실행 명령어
 CMD ["uvicorn", "backend_main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 

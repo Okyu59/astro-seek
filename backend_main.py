@@ -151,9 +151,10 @@ async def ask_oracle(request: AskRequest):
 
     try:
         # 2. Gemini 호출
-        # [수정] 모델명을 'gemini-1.5-flash-001'로 변경 (가장 안정적인 버전)
+        # [수정] 모델명을 'gemini-2.0-flash-exp'로 변경 (최신 experimental 모델 시도)
+        # 만약 이 모델도 실패한다면 'gemini-1.5-pro'를 시도해볼 수 있습니다.
         response = client.models.generate_content(
-            model='gemini-1.5-flash-001',
+            model='gemini-2.0-flash-exp',
             contents=prompt
         )
         return JSONResponse(content={"answer": response.text})

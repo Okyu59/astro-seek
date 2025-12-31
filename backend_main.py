@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from playwright.sync_api import sync_playwright
 import os
 import traceback
+import urllib.parse
 
 app = FastAPI()
 
@@ -23,10 +24,12 @@ class ChartRequest(BaseModel):
     city: str
 
 # --- [Fallback Data] ---
-# 크롤링 실패 시에만 보여줄 예비 데이터
-def get_fallback_data(date, reason="Unknown Error"):
+def get_fallback_data(date, error_msg):
+    """
+    실패 시 사용자에게 에러 원인을 보여주는 예비 데이터
+    """
     return {
-        "summary": f"(시스템: {reason}) Astro-Seek 접속 지연으로 예비 데이터를 표시합니다. ({date})",
+        "summary": f"⚠️ 데이터 조회 실패\n원인: {error_msg}\n\n(서버 메모리 부족이나 차단 문제일 수 있습니다. 아래는 예시 데이터입니다.)",
         "planets": [
             {"name": "Sun", "sign": "Virgo", "house": "10 House"},
             {"name": "Moon", "sign": "Leo", "house": "9 House"},
@@ -37,26 +40,48 @@ def get_fallback_data(date, reason="Unknown Error"):
         ]
     }
 
-# --- [Real Scraping Logic] ---
+# --- [Optimized Scraping Logic: URL Direct Access] ---
 def scrape_astro_seek(birth_date, birth_time, city):
-    print(f"[Scraper] Starting job for {birth_date} {birth_time} in {city}")
+    print(f"[Scraper] Starting job for {birth_date} {birth_time}")
     
     try:
         year, month, day = birth_date.split('-')
         hour, minute = birth_time.split(':')
     except Exception as e:
-        print(f"[Scraper] Date parsing error: {e}")
-        return get_fallback_data(birth_date, "Date Format Error")
+        return get_fallback_data(birth_date, f"Date Parsing Error: {str(e)}")
 
     data = {"planets": [], "summary": ""}
     
-    # 1. 브라우저 옵션 설정 (봇 탐지 회피 및 메모리 절약)
+    # 1. URL 직접 구성 (폼 입력 생략 -> 메모리/시간 절약)
+    # Astro-Seek 계산기 URL 패턴
+    base_url = "https://horoscopes.astro-seek.com/calculate-birth-chart-horoscope-online/"
+    params = {
+        "narozeni_den": int(day),
+        "narozeni_mesic": int(month),
+        "narozeni_rok": year,
+        "narozeni_hodina": hour,
+        "narozeni_minuta": minute,
+        "narozeni_city": "Seoul, South Korea", # 도시 고정 (복잡성 회피)
+        "narozeni_mesto_hidden": "Seoul",
+        "narozeni_stat_hidden": "KR",
+        "narozeni_podstat_kratky_hidden": "",
+        "narozeni_podstat_hidden": "Seoul"
+    }
+    
+    # URL 인코딩
+    query_string = urllib.parse.urlencode(params)
+    target_url = f"{base_url}?{query_string}"
+    print(f"[Scraper] Target URL: {target_url}")
+
+    # 2. 브라우저 옵션 (메모리 극단적 최적화)
     launch_args = [
         '--no-sandbox',
         '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
+        '--disable-dev-shm-usage', # Docker 필수
         '--disable-gpu',
-        '--single-process'
+        '--single-process', # 프로세스 단일화
+        '--disable-extensions',
+        '--disable-images' # 이미지 로딩 차단 (속도 향상)
     ]
     
     playwright = None
@@ -65,44 +90,36 @@ def scrape_astro_seek(birth_date, birth_time, city):
     try:
         playwright = sync_playwright().start()
         
-        # 2. 브라우저 실행 (User-Agent 설정 추가)
+        # 브라우저 실행
         browser = playwright.chromium.launch(headless=True, args=launch_args)
+        
+        # User-Agent 설정 (일반 사용자처럼 위장)
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            viewport={"width": 800, "height": 600}
         )
         page = context.new_page()
         
-        # 3. Astro-Seek 접속 (타임아웃 60초로 넉넉하게)
-        print("[Scraper] Navigating to website...")
-        page.goto("https://www.astro-seek.com/birth-chart-horoscope-online", timeout=60000)
+        # 3. 페이지 이동 (URL로 바로 접속)
+        print("[Scraper] Navigating directly to result page...")
+        # 네트워크가 유휴 상태일 때까지 대기하지 않고, DOM만 로드되면 진행 (속도 향상)
+        page.goto(target_url, timeout=45000, wait_until="domcontentloaded")
         
-        # 4. 폼 입력
-        print("[Scraper] Filling form...")
-        # (주의: 사이트 구조 변경 시 selector 수정 필요)
-        page.select_option('select[name="narozeni_den"]', str(int(day)))
-        page.select_option('select[name="narozeni_mesic"]', str(int(month)))
-        page.select_option('select[name="narozeni_rok"]', year)
-        page.fill('input[name="narozeni_hodina"]', hour)
-        page.fill('input[name="narozeni_minuta"]', minute)
+        # 4. 결과 테이블 대기
+        print("[Scraper] Waiting for table...")
+        try:
+            page.wait_for_selector('.horoscope_table', timeout=15000)
+        except:
+            # 혹시 선택자가 안 뜨면 페이지 소스 덤프 (디버깅용 - 로그 확인)
+            print("[Error] Table not found. Title:", page.title())
+            raise Exception("Result table not found (Timeout)")
         
-        # 도시 입력은 복잡하므로, 일단 기본값(또는 "Unknown" 체크)으로 진행하거나
-        # 나중에 URL 파라미터 방식으로 고도화 필요. 현재는 입력 없이 진행 (Default City 사용됨)
-        # *도시 검색 팝업을 피하기 위해 입력 생략*
-        
-        # 5. 계산 버튼 클릭
-        print("[Scraper] Submitting...")
-        page.click('input[type="submit"]')
-        
-        # 6. 결과 대기
-        page.wait_for_selector('.horoscope_table', timeout=30000)
-        
-        # 7. 데이터 추출
+        # 5. 데이터 추출
         print("[Scraper] Extracting data...")
         rows = page.query_selector_all(".horoscope_table tr")
         
         for row in rows:
             text = row.inner_text()
-            # 데이터 파싱 로직
             if "Sun" in text and "Sign" not in text:
                 parts = text.split()
                 if len(parts) > 1: data["planets"].append({"name": "Sun", "sign": parts[1], "house": "10 House"})
@@ -122,21 +139,18 @@ def scrape_astro_seek(birth_date, birth_time, city):
                 parts = text.split()
                 if len(parts) > 1: data["planets"].append({"name": "Jupiter", "sign": parts[1], "house": "1 House"})
 
-        # 요약문 생성
         if data["planets"]:
-            # 첫 번째 행성의 별자리를 이용해 요약 생성
             sun_sign = next((p['sign'] for p in data['planets'] if p['name'] == 'Sun'), 'Unknown')
-            data["summary"] = f"Astro-Seek에서 데이터를 성공적으로 가져왔습니다.\n당신의 태양 별자리는 {sun_sign}입니다."
+            data["summary"] = f"Astro-Seek 데이터 수신 성공!\n당신의 태양 별자리는 {sun_sign}입니다."
             print(f"[Scraper] Success! Found {len(data['planets'])} planets.")
             return data
         else:
-            print("[Scraper] Failed to find planet data in table.")
-            raise Exception("Empty data extracted")
+            raise Exception("No planet data found in table")
 
     except Exception as e:
-        print(f"[Scraper] Critical Error: {str(e)}")
-        traceback.print_exc()
-        return get_fallback_data(birth_date, "Server Busy or Blocked")
+        error_msg = str(e)
+        print(f"[Scraper] Error: {error_msg}")
+        return get_fallback_data(birth_date, error_msg) # 에러 메시지를 UI에 전달
 
     finally:
         if browser: browser.close()
@@ -146,13 +160,8 @@ def scrape_astro_seek(birth_date, birth_time, city):
 
 @app.post("/api/chart")
 async def get_chart(request: ChartRequest):
-    print(f"[API] Request: {request.date} {request.time}")
-    
-    # [수정됨] 이제 진짜 크롤링 함수를 호출합니다!
     result = scrape_astro_seek(request.date, request.time, request.city)
-    
     return JSONResponse(content=result)
-
 
 # --- [Frontend Serving] ---
 DIST_DIR = os.path.join(os.getcwd(), "frontend/dist")

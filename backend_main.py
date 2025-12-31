@@ -4,13 +4,17 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
-# import kerykeion  <-- 불필요한 import 제거
-# [수정] 라이브러리 내부 경로에서 직접 클래스를 가져오도록 변경 (ImportError 해결)
+
+# [수정] kerykeion의 메인 클래스인 KrInstance를 사용하도록 변경 (ImportError 해결)
+# KrInstance는 계산과 리포트를 통합한 헬퍼 클래스입니다.
 try:
-    from kerykeion import Report, AstrologicalSubject
+    from kerykeion import KrInstance
 except ImportError:
-    from kerykeion.report import Report
-    from kerykeion.astrological_subject import AstrologicalSubject
+    try:
+        from kerykeion.kr_instance import KrInstance
+    except ImportError:
+        print("Warning: Failed to import kerykeion.KrInstance")
+        KrInstance = None
 
 app = FastAPI()
 
@@ -29,23 +33,27 @@ class ChartRequest(BaseModel):
 
 # --- [자체 계산 엔진] ---
 def calculate_chart(birth_date, birth_time, city):
+    # 라이브러리 로드 실패 시 안전장치
+    if KrInstance is None:
+        return {"summary": "서버 구성 오류: 점성술 라이브러리를 로드할 수 없습니다.", "planets": []}
+
     try:
         year, month, day = map(int, birth_date.split('-'))
         hour, minute = map(int, birth_time.split(':'))
         
-        # 서울 좌표 기준 계산 (필요시 geonames API 연동 가능)
-        subject = AstrologicalSubject(
+        # [수정] KrInstance 사용: 서울 좌표 기준 계산 (필요시 geonames API 연동 가능)
+        user = KrInstance(
             "User", year, month, day, hour, minute, 
             city=city, lat=37.56, lng=126.97, tz_str="Asia/Seoul"
         )
-        report = Report(subject)
         
         planets_data = []
+        # KrInstance 객체는 행성 정보를 속성(Dictionary)으로 직접 가집니다.
         planet_list = [
-            ("Sun", report.sun), ("Moon", report.moon), 
-            ("Mercury", report.mercury), ("Venus", report.venus), 
-            ("Mars", report.mars), ("Jupiter", report.jupiter), 
-            ("Saturn", report.saturn), ("Ascendant", report.first_house)
+            ("Sun", user.sun), ("Moon", user.moon), 
+            ("Mercury", user.mercury), ("Venus", user.venus), 
+            ("Mars", user.mars), ("Jupiter", user.jupiter), 
+            ("Saturn", user.saturn), ("Ascendant", user.first_house)
         ]
 
         for name, obj in planet_list:
@@ -57,13 +65,13 @@ def calculate_chart(birth_date, birth_time, city):
             })
 
         return {
-            "summary": f"자체 엔진 분석 완료! 당신의 태양 별자리는 {report.sun['sign']}입니다.",
+            "summary": f"자체 엔진 분석 완료! 당신의 태양 별자리는 {user.sun['sign']}입니다.",
             "planets": planets_data
         }
 
     except Exception as e:
         print(f"Error: {e}")
-        return {"summary": "계산 오류", "planets": []}
+        return {"summary": "계산 오류가 발생했습니다.", "planets": []}
 
 # --- [API] ---
 @app.post("/api/chart")

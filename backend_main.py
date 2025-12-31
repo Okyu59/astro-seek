@@ -4,17 +4,27 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
+import sys
 
-# [수정] kerykeion의 메인 클래스인 KrInstance를 사용하도록 변경 (ImportError 해결)
-# KrInstance는 계산과 리포트를 통합한 헬퍼 클래스입니다.
+# [수정] 라이브러리 로드 방식 개선 (세부 모듈 직접 임포트)
+# KrInstance 대신 Core 클래스인 Report와 AstrologicalSubject를 직접 가져옵니다.
 try:
-    from kerykeion import KrInstance
-except ImportError:
+    from kerykeion.report import Report
+    from kerykeion.astrological_subject import AstrologicalSubject
+    LIBRARY_LOADED = True
+    print("[System] kerykeion modules loaded successfully.")
+except ImportError as e:
+    print(f"[System] Primary Import Failed: {e}")
     try:
-        from kerykeion.kr_instance import KrInstance
-    except ImportError:
-        print("Warning: Failed to import kerykeion.KrInstance")
-        KrInstance = None
+        # 폴백: 패키지 루트에서 시도
+        from kerykeion import Report, AstrologicalSubject
+        LIBRARY_LOADED = True
+        print("[System] kerykeion loaded from root package.")
+    except ImportError as e2:
+        print(f"[System] Critical Error: Failed to load Astrology Library. {e2}")
+        LIBRARY_LOADED = False
+        Report = None
+        AstrologicalSubject = None
 
 app = FastAPI()
 
@@ -34,44 +44,50 @@ class ChartRequest(BaseModel):
 # --- [자체 계산 엔진] ---
 def calculate_chart(birth_date, birth_time, city):
     # 라이브러리 로드 실패 시 안전장치
-    if KrInstance is None:
-        return {"summary": "서버 구성 오류: 점성술 라이브러리를 로드할 수 없습니다.", "planets": []}
+    if not LIBRARY_LOADED:
+        return {
+            "summary": "서버 구성 오류: 점성술 라이브러리(kerykeion)를 로드할 수 없습니다. 배포 로그를 확인해주세요.", 
+            "planets": []
+        }
 
     try:
         year, month, day = map(int, birth_date.split('-'))
         hour, minute = map(int, birth_time.split(':'))
         
-        # [수정] KrInstance 사용: 서울 좌표 기준 계산 (필요시 geonames API 연동 가능)
-        user = KrInstance(
+        # [수정] AstrologicalSubject와 Report 클래스 직접 사용
+        # 서울 좌표 기준 계산 (필요시 geonames API 연동 가능)
+        subject = AstrologicalSubject(
             "User", year, month, day, hour, minute, 
             city=city, lat=37.56, lng=126.97, tz_str="Asia/Seoul"
         )
+        report = Report(subject)
         
         planets_data = []
-        # KrInstance 객체는 행성 정보를 속성(Dictionary)으로 직접 가집니다.
+        # Report 객체는 행성 정보를 딕셔너리로 반환합니다.
         planet_list = [
-            ("Sun", user.sun), ("Moon", user.moon), 
-            ("Mercury", user.mercury), ("Venus", user.venus), 
-            ("Mars", user.mars), ("Jupiter", user.jupiter), 
-            ("Saturn", user.saturn), ("Ascendant", user.first_house)
+            ("Sun", report.sun), ("Moon", report.moon), 
+            ("Mercury", report.mercury), ("Venus", report.venus), 
+            ("Mars", report.mars), ("Jupiter", report.jupiter), 
+            ("Saturn", report.saturn), ("Ascendant", report.first_house)
         ]
 
         for name, obj in planet_list:
             house_info = obj.get('house', 'Unknown')
             planets_data.append({
                 "name": name,
-                "sign": obj['sign'],
-                "house": f"{house_info} House" if house_info != 'Unknown' else "Unknown"
+                "sign": obj.get('sign', 'Unknown'),
+                "house": f"{house_info}" if house_info != 'Unknown' else "Unknown"
             })
 
+        sun_sign = report.sun.get('sign', 'Unknown')
         return {
-            "summary": f"자체 엔진 분석 완료! 당신의 태양 별자리는 {user.sun['sign']}입니다.",
+            "summary": f"자체 엔진 분석 완료! 당신의 태양 별자리는 {sun_sign}입니다.",
             "planets": planets_data
         }
 
     except Exception as e:
-        print(f"Error: {e}")
-        return {"summary": "계산 오류가 발생했습니다.", "planets": []}
+        print(f"[Calculation Error] {e}")
+        return {"summary": f"계산 중 오류가 발생했습니다: {str(e)}", "planets": []}
 
 # --- [API] ---
 @app.post("/api/chart")

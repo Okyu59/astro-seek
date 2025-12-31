@@ -116,9 +116,8 @@ async def get_chart(request: ChartRequest):
 @app.post("/api/ask")
 async def ask_oracle(request: AskRequest):
     """
-    [Gemini ONLY] 자체 해석 로직 없이 오직 AI를 통해서만 답변을 생성합니다.
+    [Gemini ONLY] 여러 모델을 순차적으로 시도하여 가장 안정적인 답변을 제공합니다.
     """
-    # 1. API 키 없음 체크
     if not client:
         return JSONResponse(content={
             "answer": "⚠️ 서버에 Gemini API 키가 설정되지 않았습니다. Railway Variables 설정을 확인해주세요."
@@ -130,7 +129,6 @@ async def ask_oracle(request: AskRequest):
     for p in request.planets:
         chart_context += f"- {p.name}: {p.sign} in {p.house}\n"
 
-    # 프롬프트 강화
     prompt = f"""
     당신은 신비롭고 통찰력 있는 전문 점성술사 'Mystic Oracle'입니다.
     아래 제공된 사용자의 출생 차트 데이터를 바탕으로 질문에 대해 깊이 있는 점성술 상담을 제공해주세요.
@@ -149,27 +147,39 @@ async def ask_oracle(request: AskRequest):
     4. 제한: 차트 데이터에 없는 내용은 지어내지 마세요.
     """
 
-    try:
-        # 2. Gemini 호출
-        # [수정] 404 오류 해결을 위해 연결이 확인된 'gemini-2.0-flash-exp' 모델로 변경
-        response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
-            contents=prompt
-        )
-        return JSONResponse(content={"answer": response.text})
-        
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[API Error] Gemini call failed: {error_msg}")
-        
-        user_msg = f"⚠️ 죄송합니다. AI 연결 중 오류가 발생했습니다.\n(Error: {error_msg})"
-        
-        # 429 Quota Exceeded (사용량 초과) 처리
-        # Experimental 모델은 사용량 제한이 있을 수 있으므로 사용자에게 안내합니다.
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            user_msg = "⚠️ 현재 사용자가 몰려 AI 응답 한도가 초과되었습니다(429). 잠시 후(약 1분 뒤) 다시 시도해주시면 정상적으로 답변을 받으실 수 있습니다."
+    # [수정] 시도할 모델 목록 (안정적인 순서)
+    # 404나 429 에러 발생 시 다음 모델로 자동 전환합니다.
+    MODELS_TO_TRY = [
+        "gemini-1.5-flash",       # 1순위: 가장 빠르고 안정적
+        "gemini-1.5-flash-001",   # 2순위: 버전 지정
+        "gemini-2.0-flash-exp",   # 3순위: 최신 실험적 모델
+        "gemini-1.5-pro"          # 4순위: 고성능 모델
+    ]
+
+    last_error = None
+
+    for model_name in MODELS_TO_TRY:
+        try:
+            print(f"[API] Trying model: {model_name}...")
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            return JSONResponse(content={"answer": response.text})
             
-        return JSONResponse(content={"answer": user_msg})
+        except Exception as e:
+            print(f"[API] Failed with {model_name}: {e}")
+            last_error = e
+            continue # 다음 모델 시도
+
+    # 모든 모델 실패 시
+    error_msg = str(last_error)
+    user_msg = f"⚠️ 죄송합니다. AI 연결이 일시적으로 지연되고 있습니다.\n(Last Error: {error_msg})"
+    
+    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+        user_msg = "⚠️ 현재 사용자가 몰려 AI 응답 한도가 초과되었습니다. 잠시 후(약 1분 뒤) 다시 시도해주시면 감사하겠습니다."
+        
+    return JSONResponse(content={"answer": user_msg})
 
 # --- Frontend Serving ---
 DIST_DIR = os.path.join(os.getcwd(), "frontend/dist")

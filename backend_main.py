@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import os
 import sys
 from datetime import datetime, timedelta
+import google.generativeai as genai # [추가] Gemini API 라이브러리
 
 # [라이브러리 로드]
 try:
@@ -24,6 +25,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# [설정] Gemini API 키 설정
+# Railway 배포 시 Variables 탭에서 GEMINI_API_KEY를 추가해야 합니다.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if GEMINI_API_KEY:
+    try:
+        genai.configure(api_key=GEMINI_API_KEY)
+        # 빠르고 효율적인 Flash 모델 사용 권장
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        print("[System] Gemini API Configured successfully.")
+    except Exception as e:
+        print(f"[System] Gemini Configuration Error: {e}")
+        model = None
+else:
+    print("[System] Warning: GEMINI_API_KEY not found in environment variables.")
+    model = None
+
 # --- [데이터 모델] ---
 class ChartRequest(BaseModel):
     date: str
@@ -38,34 +56,6 @@ class PlanetData(BaseModel):
 class AskRequest(BaseModel):
     question: str
     planets: list[PlanetData] # 질문 시 차트 정보를 함께 받음
-
-# --- [점성술 해석 데이터베이스] ---
-# 간단한 키워드 기반 해석 엔진
-ASTRO_DB = {
-    "signs": {
-        "Aries": {"kwd": "용기있고 주도적인", "love": "불꽃처럼 뜨겁고 직설적인", "work": "새로운 길을 개척하는 리더형"},
-        "Taurus": {"kwd": "신중하고 감각적인", "love": "변함없고 신뢰할 수 있는", "work": "안정과 결과를 중요시하는 실리형"},
-        "Gemini": {"kwd": "호기심 많고 재치있는", "love": "대화가 잘 통하고 유쾌한", "work": "다양한 정보를 다루는 멀티태스커"},
-        "Cancer": {"kwd": "감수성이 풍부하고 보호적인", "love": "헌신적이고 깊은 공감을 나누는", "work": "팀워크와 돌봄에 능한"},
-        "Leo": {"kwd": "자신감 넘치고 열정적인", "love": "드라마틱하고 로맨틱한", "work": "주목받는 무대나 창조적인 분야"},
-        "Virgo": {"kwd": "섬세하고 분석적인", "love": "배려심 깊고 현실적인", "work": "완벽함을 추구하는 전문가형"},
-        "Libra": {"kwd": "조화롭고 사교적인", "love": "세련되고 매너있는", "work": "중재와 협상을 잘하는 파트너형"},
-        "Scorpio": {"kwd": "통찰력 있고 강렬한", "love": "영혼까지 공유하는 깊은", "work": "본질을 꿰뚫어보는 탐구형"},
-        "Sagittarius": {"kwd": "자유롭고 철학적인", "love": "함께 모험을 떠날 수 있는", "work": "비전을 제시하는 이상가형"},
-        "Capricorn": {"kwd": "성실하고 야망있는", "love": "책임감 있고 진중한", "work": "목표를 반드시 달성하는 전략가형"},
-        "Aquarius": {"kwd": "독창적이고 이성적인", "love": "친구 같으면서도 존중받는", "work": "기존의 틀을 깨는 혁신가형"},
-        "Pisces": {"kwd": "직관적이고 몽환적인", "love": "낭만적이고 희생적인", "work": "예술적 영감과 치유 능력이 있는"}
-    },
-    "planets": {
-        "Sun": "자아와 인생의 목표",
-        "Moon": "무의식과 감정",
-        "Mercury": "지성과 의사소통",
-        "Venus": "사랑과 미적 가치관",
-        "Mars": "행동력과 열정",
-        "Jupiter": "행운과 확장",
-        "Saturn": "책임과 시련"
-    }
-}
 
 def get_zodiac_sign(longitude):
     """황경(0~360도)을 별자리 이름으로 변환"""
@@ -142,69 +132,51 @@ async def get_chart(request: ChartRequest):
 @app.post("/api/ask")
 async def ask_oracle(request: AskRequest):
     """
-    사용자의 질문과 차트 정보를 받아 맞춤형 해석을 생성하는 엔드포인트
+    [Gemini 연동] 사용자의 질문과 차트 정보를 바탕으로 AI 점성술사가 답변을 생성합니다.
     """
+    # 1. API 키 확인
+    if not model:
+        return JSONResponse(content={
+            "answer": "⚠️ 죄송합니다. 현재 서버에 AI 설정(API Key)이 되어있지 않아 상세한 상담이 어렵습니다. 관리자에게 문의해주세요."
+        })
+
+    # 2. 프롬프트 구성
     q = request.question
-    planets = {p.name: p for p in request.planets} # 검색 쉽게 변환
     
-    response_text = ""
-    
-    # 1. 질문 키워드 분석 및 행성 매핑
-    target_planets = []
-    category = "general"
-    
-    if any(k in q for k in ["연애", "사랑", "남자", "여자", "결혼", "인연"]):
-        target_planets = ["Venus", "Moon", "Mars"]
-        category = "love"
-        response_text += "💖 사랑과 인연의 흐름을 읽어드릴게요.\n\n"
-        
-    elif any(k in q for k in ["직업", "일", "돈", "성공", "진로", "적성"]):
-        target_planets = ["Sun", "Mercury", "Saturn", "Mars"]
-        category = "work"
-        response_text += "💼 당신의 직업적 잠재력을 살펴볼게요.\n\n"
-        
-    elif any(k in q for k in ["성격", "나", "자아", "심리"]):
-        target_planets = ["Sun", "Moon", "Ascendant"]
-        category = "personality"
-        response_text += "✨ 당신의 내면과 본질을 들여다봅니다.\n\n"
-        
-    elif any(k in q for k in ["2026", "내년", "운세", "미래"]):
-        # 운세는 트랜짓 계산이 필요하나 여기선 네이탈 기반 조언으로 대체
-        target_planets = ["Jupiter", "Saturn"]
-        category = "future"
-        response_text += "📅 2026년의 흐름을 예측해봅니다.\n\n"
-    
-    else:
-        target_planets = ["Sun", "Moon"]
-        response_text += "🔮 별들의 메시지를 전해드립니다.\n\n"
+    # 차트 데이터를 텍스트로 변환
+    chart_context = "User's Birth Chart Data:\n"
+    for p in request.planets:
+        chart_context += f"- {p.name}: {p.sign} in {p.house}\n"
 
-    # 2. 해석 생성 로직
-    for p_name in target_planets:
-        if p_name not in planets: continue
-        
-        p_data = planets[p_name]
-        sign_info = ASTRO_DB["signs"].get(p_data.sign, {})
-        
-        # 행성별 역할 설명
-        role = ASTRO_DB["planets"].get(p_name, "")
-        
-        # 별자리 특성
-        trait = sign_info.get("kwd", "")
-        detail = sign_info.get(category if category in ["love", "work"] else "kwd", "")
-        
-        response_text += f"• **{p_name} ({p_data.sign})**: {role}을(를) 의미합니다. 당신은 이 부분에서 **{trait}** 성향을 보이며, 특히 {category if category in ['love', 'work'] else '삶'}에 있어서 **{detail}** 태도를 취하게 됩니다.\n"
+    prompt = f"""
+    당신은 신비롭고 통찰력 있는 전문 점성술사 'Mystic Oracle'입니다.
+    아래 제공된 사용자의 출생 차트(Birth Chart) 데이터를 바탕으로 사용자의 질문에 답변해주세요.
 
-    # 3. 마무리 조언
-    if category == "love":
-        venus_sign = planets.get("Venus", {}).get("sign", "")
-        response_text += f"\n💡 조언: 당신의 금성이 {venus_sign}에 있으므로, 감정을 숨기기보다 솔직하게 표현할 때 진정한 인연을 만날 수 있습니다."
-    elif category == "work":
-        sun_sign = planets.get("Sun", {}).get("sign", "")
-        response_text += f"\n💡 조언: 태양 별자리인 {sun_sign}의 강점을 살려, {ASTRO_DB['signs'][sun_sign]['work']} 분야에 도전해보세요."
-    elif category == "future":
-        response_text += "\n💡 2026년은 목성의 영향으로 확장의 기회가 옵니다. 준비된 자에게 행운이 따를 것입니다."
+    [차트 데이터]
+    {chart_context}
+
+    [사용자 질문]
+    "{q}"
+
+    [답변 가이드라인]
+    1. 말투: 신비롭고 따뜻하며, 전문적인 점성술사의 어조를 유지하세요. (존댓말 사용)
+    2. 내용: 질문과 관련된 특정 행성이나 하우스의 위치를 근거로 들어 구체적으로 해석해주세요.
+       - 예: 연애운 질문이면 금성(Venus)과 5하우스/7하우스를 언급.
+       - 예: 직업운 질문이면 태양(Sun), 수성(Mercury), 10하우스를 언급.
+    3. 형식: 너무 길지 않게, 3~4문단의 읽기 편한 길이로 작성해주세요. 중요한 키워드는 강조해도 좋습니다.
+    4. 공감: 사용자의 고민에 공감하고 긍정적인 방향을 제시해주세요.
+    """
+
+    try:
+        # 3. Gemini에게 답변 요청
+        response = model.generate_content(prompt)
+        return JSONResponse(content={"answer": response.text})
         
-    return JSONResponse(content={"answer": response_text})
+    except Exception as e:
+        print(f"Gemini API Error: {e}")
+        return JSONResponse(content={
+            "answer": "죄송합니다. 별들의 목소리를 듣는 중에 잠시 잡음이 발생했습니다. 잠시 후 다시 물어봐주시겠어요?"
+        })
 
 # --- Frontend Serving ---
 DIST_DIR = os.path.join(os.getcwd(), "frontend/dist")

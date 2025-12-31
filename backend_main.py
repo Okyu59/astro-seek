@@ -151,19 +151,23 @@ async def ask_oracle(request: AskRequest):
 
     try:
         # 2. Gemini 호출
-        # [수정] 모델명을 'gemini-2.0-flash-exp'로 변경 (최신 experimental 모델 시도)
-        # 만약 이 모델도 실패한다면 'gemini-1.5-pro'를 시도해볼 수 있습니다.
+        # [수정] 모델을 'gemini-1.5-pro'로 변경 (2.0-flash-exp 쿼터 초과 시 안정적인 대안)
         response = client.models.generate_content(
-            model='gemini-2.0-flash-exp',
+            model='gemini-1.5-pro',
             contents=prompt
         )
         return JSONResponse(content={"answer": response.text})
         
     except Exception as e:
         print(f"[API Error] Gemini call failed: {e}")
-        return JSONResponse(content={
-            "answer": f"⚠️ 죄송합니다. AI 연결 중 오류가 발생했습니다.\n(Error: {str(e)})"
-        })
+        error_msg = str(e)
+        user_msg = f"⚠️ 죄송합니다. AI 연결 중 오류가 발생했습니다.\n(Error: {error_msg})"
+        
+        # 쿼터 초과 에러(429)에 대한 친절한 안내 메시지 추가
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+            user_msg = "⚠️ 현재 사용자가 몰려 AI 응답 한도가 초과되었습니다(429). 잠시 후(약 1분 뒤) 다시 시도해주세요."
+            
+        return JSONResponse(content={"answer": user_msg})
 
 # --- Frontend Serving ---
 DIST_DIR = os.path.join(os.getcwd(), "frontend/dist")

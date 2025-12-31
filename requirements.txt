@@ -3,3 +3,4 @@ uvicorn
 pydantic
 pyswisseph
 google-generativeai
+importlib-metadata

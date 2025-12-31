@@ -5,14 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import sys
+from datetime import datetime, timedelta
 
 # [라이브러리 로드]
+# Swiss Ephemeris (pyswisseph): 점성술 업계 표준 정밀 계산 라이브러리
+# Astro-Seek, Astro.com 등에서 사용하는 엔진과 동일한 기반입니다.
 try:
-    from flatlib.datetime import Datetime
-    from flatlib.geopos import GeoPos
-    from flatlib.chart import Chart
-    from flatlib import const
+    import swisseph as swe
     LIBRARY_LOADED = True
+    # Ephemeris 파일 경로 설정 (없으면 기본 내장 Moshier 모델 사용 - 약 3000년 범위 내 정밀)
+    # swe.set_ephe_path('/usr/share/ephe') 
 except ImportError as e:
     LIBRARY_LOADED = False
     IMPORT_ERROR = str(e)
@@ -31,77 +33,110 @@ class ChartRequest(BaseModel):
     time: str
     city: str
 
+def get_zodiac_sign(longitude):
+    """황경(0~360도)을 별자리 이름으로 변환"""
+    signs = [
+        "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", 
+        "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+    ]
+    index = int(longitude / 30)
+    return signs[index % 12]
+
 def calculate_chart(birth_date, birth_time, city):
-    # 1. 라이브러리 자체가 안 깔린 경우
+    # 1. 라이브러리가 안 깔린 경우
     if not LIBRARY_LOADED:
         return {
-            "summary": f"⚠️ 서버 설정 오류: 라이브러리 로드 실패\n({IMPORT_ERROR})\nrequirements.txt에 flatlib이 있는지 확인해주세요.",
+            "summary": f"⚠️ 서버 설정 오류: pyswisseph 로드 실패\n({IMPORT_ERROR})\nrequirements.txt에 pyswisseph가 있는지 확인해주세요.",
             "planets": []
         }
 
     try:
-        # 날짜 포맷 변환 (YYYY-MM-DD -> YYYY/MM/DD)
-        date_str = birth_date.replace('-', '/')
-        # 시간 포맷 (HH:MM) - 초 단위가 없으면 :00 추가
-        time_str = birth_time if len(birth_time.split(':')) == 3 else f"{birth_time}:00"
+        # 날짜/시간 파싱
+        year, month, day = map(int, birth_date.split('-'))
+        hour, minute = map(int, birth_time.split(':'))
         
-        # 1) 시간 객체 생성 (+09:00 한국 표준시 고정)
-        # [수정] 날짜와 시간을 분리하여 전달해야 'invalid literal for int' 에러를 방지할 수 있습니다.
-        date = Datetime(date_str, time_str, '+09:00')
+        # 1. 시간 변환 (KST -> UTC)
+        # 한국 표준시(KST)는 UTC+9입니다. 정확한 계산을 위해 UTC로 변환합니다.
+        dt_kst = datetime(year, month, day, hour, minute)
+        dt_utc = dt_kst - timedelta(hours=9)
         
-        # 2) 위치 객체 생성 (서울)
-        pos = GeoPos(37.56, 126.97)
+        # 율리우스 적일(Julian Day) 계산을 위한 십진수 시간(Decimal Hour)
+        hour_decimal = dt_utc.hour + (dt_utc.minute / 60.0) + (dt_utc.second / 3600.0)
         
-        # 3) 차트 계산
-        chart = Chart(date, pos, IDs=const.LIST_OBJECTS)
-
+        # 2. 율리우스 적일(Julian Day) 계산
+        jd = swe.julday(dt_utc.year, dt_utc.month, dt_utc.day, hour_decimal)
+        
+        # 3. 위치 설정 (서울: 37.56N, 126.97E)
+        # 실제 서비스에서는 입력된 City에 따라 좌표를 찾아야 합니다.
+        lat = 37.56
+        lon = 126.97
+        
+        # 4. 하우스 계산 (Placidus 시스템: b'P')
+        # cusps: 하우스 커스프(경계), ascmc: [ASC, MC, ARMC, Vertex, ...]
+        cusps, ascmc = swe.houses(jd, lat, lon, b'P')
+        
+        # 상승궁 (Ascendant)
+        asc_sign = get_zodiac_sign(ascmc[0])
+        
+        # 5. 행성 위치 계산
         planets_data = []
-        objects = [
-            ("Sun", const.SUN), ("Moon", const.MOON), ("Mercury", const.MERCURY),
-            ("Venus", const.VENUS), ("Mars", const.MARS), ("Jupiter", const.JUPITER),
-            ("Saturn", const.SATURN), ("Ascendant", const.ASC)
+        
+        # 행성 ID 매핑
+        bodies = [
+            ("Sun", swe.SUN),
+            ("Moon", swe.MOON),
+            ("Mercury", swe.MERCURY),
+            ("Venus", swe.VENUS),
+            ("Mars", swe.MARS),
+            ("Jupiter", swe.JUPITER),
+            ("Saturn", swe.SATURN)
         ]
-
+        
         sun_sign = "Unknown"
 
-        for name, const_id in objects:
+        for name, body_id in bodies:
+            # 행성 위치 계산 (UT 기준)
+            # 반환값: ((long, lat, dist, ...), flags)
+            res = swe.calc_ut(jd, body_id)
+            longitude = res[0][0]
+            
+            # 별자리 판별
+            sign = get_zodiac_sign(longitude)
+            
+            # 하우스 판별
+            # swe.house_pos: 행성의 황경과 위도를 이용해 하우스 위치(1.0 ~ 12.99)를 계산
             try:
-                obj = chart.get(const_id)
-                sign = obj.sign
-                
-                # 하우스 계산 (안전하게 처리)
-                house_str = "Unknown"
-                if name != "Ascendant":
-                    # 단순하게 하우스 리스트 순회
-                    for h in chart.houses:
-                        if h.hasObject(obj):
-                            house_str = f"{h.id} House"
-                            break
-                else:
-                    house_str = "1 House"
-
-                planets_data.append({
-                    "name": name, 
-                    "sign": sign, 
-                    "house": house_str
-                })
-                
-                if name == "Sun": sun_sign = sign
+                h_pos = swe.house_pos(jd, lat, lon, b'P', longitude, 0.0)
+                house_num = int(h_pos)
+                planet_house = f"{house_num} House"
             except:
-                continue
+                planet_house = "Unknown"
+
+            planets_data.append({
+                "name": name,
+                "sign": sign,
+                "house": planet_house
+            })
+            
+            if name == "Sun":
+                sun_sign = sign
+
+        # 상승궁 추가
+        planets_data.append({
+            "name": "Ascendant",
+            "sign": asc_sign,
+            "house": "1 House"
+        })
 
         return {
-            "summary": f"분석 성공! 당신의 태양 별자리는 {sun_sign}입니다.",
+            "summary": f"정밀 분석(Swiss Ephemeris) 완료! 당신의 태양 별자리는 {sun_sign}입니다.",
             "planets": planets_data
         }
-
+        
     except Exception as e:
-        # [핵심] 에러가 발생하면 구체적인 영어 메시지를 반환함
         return {
-            "summary": f"⚠️ 계산 실패 원인: {str(e)}\n(이 메시지를 알려주세요)",
-            "planets": [
-                {"name": "Error", "sign": "Check", "house": "Logs"}
-            ]
+            "summary": f"⚠️ 계산 실패 원인: {str(e)}",
+            "planets": []
         }
 
 @app.post("/api/chart")

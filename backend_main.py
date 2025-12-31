@@ -25,19 +25,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# [설정] Gemini API 클라이언트
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# [설정] Gemini API 클라이언트 (점검 및 강화)
+# Railway 환경 변수에서 키를 안전하게 가져옵니다.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 client = None
 
 if GEMINI_API_KEY:
-    try:
-        # 공백 제거 후 클라이언트 초기화
-        client = genai.Client(api_key=GEMINI_API_KEY.strip())
-        print(f"[System] Gemini API Client Configured. (Key Length: {len(GEMINI_API_KEY.strip())})")
-    except Exception as e:
-        print(f"[System] Gemini Client Initialization Error: {e}")
+    # 공백 제거 (복사 붙여넣기 실수 방지)
+    clean_key = GEMINI_API_KEY.strip()
+    
+    if not clean_key:
+        print("[System] Error: GEMINI_API_KEY variable exists but is empty.")
+    else:
+        try:
+            # 클라이언트 초기화
+            client = genai.Client(api_key=clean_key)
+            
+            # [디버깅 로그] 키의 앞 4자리와 길이만 출력하여 정상 로드 확인 (보안 유지)
+            masked_key = f"{clean_key[:4]}...({len(clean_key)} chars)"
+            print(f"[System] Gemini API Client Configured successfully. Key: {masked_key}")
+            
+        except Exception as e:
+            print(f"[System] Gemini Client Initialization Error: {e}")
 else:
-    print("[System] Warning: GEMINI_API_KEY environment variable not found.")
+    print("[System] Warning: GEMINI_API_KEY environment variable is NOT set.")
 
 # --- [데이터 모델] ---
 class ChartRequest(BaseModel):
@@ -147,13 +158,12 @@ async def ask_oracle(request: AskRequest):
     4. 제한: 차트 데이터에 없는 내용은 지어내지 마세요.
     """
 
-    # [수정] 시도할 모델 목록 (안정적인 순서)
-    # 404나 429 에러 발생 시 다음 모델로 자동 전환합니다.
+    # 시도할 모델 목록 (안정적인 순서)
     MODELS_TO_TRY = [
-        "gemini-1.5-flash",       # 1순위: 가장 빠르고 안정적
-        "gemini-1.5-flash-001",   # 2순위: 버전 지정
-        "gemini-2.0-flash-exp",   # 3순위: 최신 실험적 모델
-        "gemini-1.5-pro"          # 4순위: 고성능 모델
+        "gemini-1.5-flash",       # 1순위
+        "gemini-1.5-flash-001",   # 2순위
+        "gemini-2.0-flash-exp",   # 3순위
+        "gemini-1.5-pro"          # 4순위
     ]
 
     last_error = None
@@ -170,7 +180,7 @@ async def ask_oracle(request: AskRequest):
         except Exception as e:
             print(f"[API] Failed with {model_name}: {e}")
             last_error = e
-            continue # 다음 모델 시도
+            continue 
 
     # 모든 모델 실패 시
     error_msg = str(last_error)

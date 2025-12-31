@@ -4,8 +4,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
-import kerykeion # 자체 계산 라이브러리
-from kerykeion import Report, AstrologicalSubject
+# import kerykeion  <-- 불필요한 import 제거
+# [수정] 라이브러리 내부 경로에서 직접 클래스를 가져오도록 변경 (ImportError 해결)
+try:
+    from kerykeion import Report, AstrologicalSubject
+except ImportError:
+    from kerykeion.report import Report
+    from kerykeion.astrological_subject import AstrologicalSubject
 
 app = FastAPI()
 

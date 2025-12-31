@@ -6,7 +6,7 @@ from pydantic import BaseModel
 import os
 import sys
 from datetime import datetime, timedelta
-from google import genai # [변경] 최신 Gemini API 라이브러리
+from google import genai # 최신 라이브러리
 
 # [라이브러리 로드]
 try:
@@ -25,22 +25,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# [설정] Gemini API 클라이언트 설정 (google-genai 최신 버전)
-# Railway Variables에 GEMINI_API_KEY가 등록되어 있어야 합니다.
+# [설정] Gemini API 클라이언트
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = None
 
 if GEMINI_API_KEY:
-    # [수정] API 키 값의 앞뒤 공백 제거 (복사/붙여넣기 실수 방지)
-    GEMINI_API_KEY = GEMINI_API_KEY.strip()
     try:
-        # 최신 SDK 초기화 방식
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        print(f"[System] Gemini API Client Configured successfully. (Key Length: {len(GEMINI_API_KEY)})")
+        # 공백 제거 후 클라이언트 초기화
+        client = genai.Client(api_key=GEMINI_API_KEY.strip())
+        print(f"[System] Gemini API Client Configured. (Key Length: {len(GEMINI_API_KEY.strip())})")
     except Exception as e:
-        print(f"[System] Gemini Client Error: {e}")
+        print(f"[System] Gemini Client Initialization Error: {e}")
 else:
-    print("[System] Warning: GEMINI_API_KEY not found in environment variables. Please check Railway Variables.")
+    print("[System] Warning: GEMINI_API_KEY environment variable not found.")
 
 # --- [데이터 모델] ---
 class ChartRequest(BaseModel):
@@ -58,20 +55,13 @@ class AskRequest(BaseModel):
     planets: list[PlanetData]
 
 def get_zodiac_sign(longitude):
-    """황경(0~360도)을 별자리 이름으로 변환"""
-    signs = [
-        "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", 
-        "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-    ]
+    signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
     index = int(longitude / 30)
     return signs[index % 12]
 
 def calculate_chart(birth_date, birth_time, city):
     if not LIBRARY_LOADED:
-        return {
-            "summary": f"⚠️ 서버 설정 오류: pyswisseph 로드 실패\n({IMPORT_ERROR})\nrequirements.txt 확인 필요",
-            "planets": []
-        }
+        return {"summary": f"⚠️ 라이브러리 에러: {IMPORT_ERROR}", "planets": []}
 
     try:
         year, month, day = map(int, birth_date.split('-'))
@@ -96,11 +86,9 @@ def calculate_chart(birth_date, birth_time, city):
 
         for name, body_id in bodies:
             res = swe.calc_ut(jd, body_id)
-            longitude = res[0][0]
-            sign = get_zodiac_sign(longitude)
-            
+            sign = get_zodiac_sign(res[0][0])
             try:
-                h_pos = swe.house_pos(jd, lat, lon, b'P', longitude, 0.0)
+                h_pos = swe.house_pos(jd, lat, lon, b'P', res[0][0], 0.0)
                 planet_house = f"{int(h_pos)} House"
             except:
                 planet_house = "Unknown"
@@ -128,12 +116,12 @@ async def get_chart(request: ChartRequest):
 @app.post("/api/ask")
 async def ask_oracle(request: AskRequest):
     """
-    [Gemini 연동] 사용자의 질문과 차트 정보를 바탕으로 AI 점성술사가 답변을 생성합니다.
+    [Gemini ONLY] 자체 해석 로직 없이 오직 AI를 통해서만 답변을 생성합니다.
     """
+    # 1. API 키 없음 체크
     if not client:
-        print("[API Error] Client is not initialized. GEMINI_API_KEY is missing or invalid.")
         return JSONResponse(content={
-            "answer": "⚠️ 죄송합니다. 현재 서버에 AI 설정(API Key)이 되어있지 않아 상세한 상담이 어렵습니다. 관리자에게 문의해주세요."
+            "answer": "⚠️ 서버에 Gemini API 키가 설정되지 않았습니다. Railway Variables 설정을 확인해주세요."
         })
 
     q = request.question
@@ -142,9 +130,10 @@ async def ask_oracle(request: AskRequest):
     for p in request.planets:
         chart_context += f"- {p.name}: {p.sign} in {p.house}\n"
 
+    # 프롬프트 강화
     prompt = f"""
     당신은 신비롭고 통찰력 있는 전문 점성술사 'Mystic Oracle'입니다.
-    아래 제공된 사용자의 출생 차트(Birth Chart) 데이터를 바탕으로 사용자의 질문에 답변해주세요.
+    아래 제공된 사용자의 출생 차트 데이터를 바탕으로 질문에 대해 깊이 있는 점성술 상담을 제공해주세요.
 
     [차트 데이터]
     {chart_context}
@@ -153,14 +142,15 @@ async def ask_oracle(request: AskRequest):
     "{q}"
 
     [답변 가이드라인]
-    1. 말투: 신비롭고 따뜻하며, 전문적인 점성술사의 어조를 유지하세요. (존댓말 사용)
-    2. 내용: 질문과 관련된 특정 행성이나 하우스의 위치를 근거로 들어 구체적으로 해석해주세요.
-    3. 형식: 너무 길지 않게, 3~4문단의 읽기 편한 길이로 작성해주세요.
-    4. 공감: 사용자의 고민에 공감하고 긍정적인 방향을 제시해주세요.
+    1. 어조: 신비롭지만 따뜻하고 공감하는 어조 (한국어 존댓말).
+    2. 분석: 질문과 관련된 행성의 위치(사인, 하우스)를 구체적으로 언급하며 해석의 근거를 제시하세요.
+       - 예: 연애운이면 금성/달, 직업운이면 태양/수성/10하우스 등.
+    3. 구조: 가독성 있게 3~4 문단으로 구성하고 핵심 키워드는 강조하세요.
+    4. 제한: 차트 데이터에 없는 내용은 지어내지 마세요.
     """
 
     try:
-        # 최신 라이브러리 문법 사용
+        # 2. Gemini 호출
         response = client.models.generate_content(
             model='gemini-1.5-flash',
             contents=prompt
@@ -168,9 +158,9 @@ async def ask_oracle(request: AskRequest):
         return JSONResponse(content={"answer": response.text})
         
     except Exception as e:
-        print(f"Gemini API Error: {e}")
+        print(f"[API Error] Gemini call failed: {e}")
         return JSONResponse(content={
-            "answer": "죄송합니다. 별들의 목소리를 듣는 중에 잠시 잡음이 발생했습니다. 잠시 후 다시 물어봐주시겠어요?"
+            "answer": f"⚠️ 죄송합니다. AI 연결 중 오류가 발생했습니다.\n(Error: {str(e)})"
         })
 
 # --- Frontend Serving ---
